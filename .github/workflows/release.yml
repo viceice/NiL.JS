@@ -85,8 +85,7 @@ jobs:
     - name: Decode the snk
       run: |
         $snk_byte = [System.Convert]::FromBase64String("${{ secrets.SNK_KEY }}")
-        $certificatePath = Join-Path -Path $env:Project_Directory -ChildPath key.snk
-        [IO.File]::WriteAllBytes("$certificatePath", $snk_byte)
+        [IO.File]::WriteAllBytes($Project_Directory + "/keys.snk", $snk_byte)
 
     # Execute all unit tests in the solution
     - name: Execute unit tests
@@ -101,11 +100,11 @@ jobs:
 
     # Remove the pfx
     - name: Remove the snk
-      run: Remove-Item -path $env:Project_Directory\key.snk
+      run: Remove-Item -path NiL.JS\keys.snk
 
     # Upload the MSIX package: https://github.com/marketplace/actions/upload-a-build-artifact
     - name: Upload build artifacts
       uses: actions/upload-artifact@v2
       with:
         name: NuGet Package
-        path: ${{ env.Nuget_Pack_Output_Directory }}\nuget
+        path: ${{ env.Nuget_Pack_Output_Directory }}
