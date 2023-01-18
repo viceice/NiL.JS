@@ -36,15 +36,16 @@
 # For a complete CI/CD sample to get started with GitHub Action workflows for Desktop Applications,
 # refer to https://github.com/microsoft/github-actions-for-desktop-apps
 
-name: Build NuGet Package
+name: Make release
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
 
 jobs:
 
   build:
+    
+    environment: release
 
     strategy:
       matrix:
@@ -122,3 +123,19 @@ jobs:
       with:
         name: NuGet Package
         path: ${{ env.Nuget_Pack_Output_Directory }}
+
+    - name: Make release tag
+      run: |
+        $TAG=$VERSION.$(git rev-list --count origin/develop)
+        git tag $TAG
+        git push --tags
+
+    - name: Build release message
+      run: ./buildReleaseMessage.ps1 > release.md
+
+    - name: Make release
+      uses: ncipollo/release-action@v1
+      with:
+        tag: $TAG
+        artifacts: ${{ env.Nuget_Pack_Output_Directory }}/*
+        bodyFile: "release.md"
