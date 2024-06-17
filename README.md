@@ -1,5 +1,5 @@
 
-![NiL.JS Icon](./nil.js_logo_48.png) NiL.JS
+![NiL.JS Icon](https://raw.githubusercontent.com/nilproject/NiL.JS/develop/nil.js_logo_48.png) NiL.JS
 =====
 Open source ECMAScript 6.0 (ES2015) (JavaScript) engine.
 Licensed under BSD 3-Clause License.
