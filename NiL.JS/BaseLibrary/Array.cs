@@ -197,7 +197,9 @@ public sealed class Array : JSObject, IIterable
 
         if (_data.Length != nlen)
         {
-            _data.TrimLength();
+            if (_data.Length > nlen)
+                _data.TrimLength();
+
             _data[(int)nlen - 1] = _data[(int)nlen - 1];
         }
 
@@ -1237,7 +1239,7 @@ public sealed class Array : JSObject, IIterable
                     var v = args[i];
 
                     tempKey._iValue = i;
-                    var parentProp = selfa.GetProperty(tempKey, false, PropertyScope.Super);
+                    var parentProp = selfa.__proto__?.GetProperty(tempKey, false, PropertyScope.Common);
                     if (parentProp is null or not { _valueType: JSValueType.Property })
                         selfa._data.Add(v.CloneImpl(false));
                     else
@@ -2307,7 +2309,7 @@ public sealed class Array : JSObject, IIterable
                     {
                         notExists._valueType = JSValueType.NotExistsInObject;
                         res = notExists;
-                        if (res._valueType < JSValueType.Undefined && memberScope != PropertyScope.Own)
+                        if (memberScope != PropertyScope.Own)
                         {
                             return __proto__.GetProperty(key, false, memberScope);
                         }

@@ -361,7 +361,8 @@ internal abstract class Proxy : JSObject
         }
 
         IList<MemberInfo> m = null;
-        _members.TryGetValue(name, out m);
+        if (key._valueType is not JSValueType.Integer and not JSValueType.Double)
+            _members.TryGetValue(name, out m);
 
         if (m == null || m.Count == 0)
         {
@@ -371,9 +372,6 @@ internal abstract class Proxy : JSObject
                 property = protoInstanceAsJs.GetProperty(key, forWrite && !_indexersSupported, memberScope);
             else
                 property = base.GetProperty(key, forWrite && !_indexersSupported, memberScope);
-
-            if (!_indexersSupported)
-                return property;
 
             if (property.Exists)
             {
@@ -392,12 +390,17 @@ internal abstract class Proxy : JSObject
                 return property;
             }
 
-            var args = new Arguments { null, key };
-            return new JSValue
+            if (_indexersSupported)
             {
-                _valueType = JSValueType.Property,
-                _oValue = new PropertyPair(_indexerProperty.getter.bind(args), _indexerProperty.setter.bind(args))
-            };
+                var args = new Arguments { null, key };
+                return new JSValue
+                {
+                    _valueType = JSValueType.Property,
+                    _oValue = new PropertyPair(_indexerProperty.getter.bind(args), _indexerProperty.setter.bind(args))
+                };
+            }
+            else
+                return property;
         }
 
         var result = proxyMember(m);
