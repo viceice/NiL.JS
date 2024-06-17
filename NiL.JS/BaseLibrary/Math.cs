@@ -622,7 +622,7 @@ public static class Math
             var r = ((long)shr(m, e) + ((long)shr(m, (e - 1)) & 1) * s) * s;
             if ((value._attributes & JSValueAttributesInternal.Cloned) != 0)
             {
-                if ((r & uint.MaxValue) == r)
+                if ((r & int.MaxValue) == r)
                 {
                     value._valueType = JSValueType.Integer;
                     value._iValue = (int)r;
