@@ -1,20 +1,23 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 
 namespace NiL.JS.Core;
 
+[DebuggerDisplay("Count = {Count}")]
 public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue>, ICloneable
 {
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     private struct NavyItem
     {
         public uint index;
-        public short zeroContinue;
-        public short oneContinue;
+        public ushort zeroContinue;
+        public ushort oneContinue;
 
         public override string ToString()
         {
@@ -27,25 +30,31 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
     private static TValue _fictive;
 
     private uint _pseudoLength;
+
+    private NavyItem[] _segmentsNavyData;
+    private int _segmentsCount;
+
     private NavyItem[][] _navyData;
     private TValue[][] _values;
-    private short[] _used;
+    private ushort[] _used;
 
     [CLSCompliant(false)]
     public uint Length => _pseudoLength;
 
     public SparseArray()
     {
-        _values = Array.Empty<TValue[]>();
-        _navyData = Array.Empty<NavyItem[]>();
-        _used = Array.Empty<short>();
+        _segmentsNavyData = [];
+        _values = [];
+        _navyData = [];
+        _used = [];
     }
 
     public SparseArray(TValue[] values)
     {
-        _values = Array.Empty<TValue[]>();
-        _navyData = Array.Empty<NavyItem[]>();
-        _used = Array.Empty<short>();
+        _segmentsNavyData = [];
+        _values = [];
+        _navyData = [];
+        _used = [];
 
         for (var i = 0; i < values.Length; i++)
             this[i] = values[i];
@@ -89,18 +98,19 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
 
     internal ref TValue TryGetInternalForRead(uint index, out bool got)
     {
-        var segment = index / SegmentSize;
+        var virtualSegmentIndex = index / SegmentSize;
+        var realSegmentIndex = segmentIndexRecalc(virtualSegmentIndex, true);
 
-        if (_navyData.Length <= segment)
+        if (realSegmentIndex < 0 || _navyData.Length <= realSegmentIndex)
         {
             got = false;
             _fictive = default;
             return ref _fictive;
         }
 
-        if (_navyData[segment].Length == 0)
+        if (_navyData[realSegmentIndex].Length == 0)
         {
-            var values = _values[segment];
+            var values = _values[realSegmentIndex];
             var itemIndex = index & (SegmentSize - 1);
 
             if (itemIndex >= values.Length)
@@ -114,36 +124,38 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
             return ref values[itemIndex];
         }
 
-        return ref getFromTree(index, true, out got, segment);
+        ref var result = ref getFromTree(index, true, out got, realSegmentIndex);
+        return ref result;
     }
 
     internal ref TValue TryGetInternalForWrite(uint index, out bool got)
     {
-        var segment = index / SegmentSize;
+        var virtaulSegmentIndex = index / SegmentSize;
+        var realSegmentIndex = segmentIndexRecalc(virtaulSegmentIndex, false);
 
-        if (_navyData.Length <= segment)
+        if (_navyData.Length <= realSegmentIndex)
         {
-            resizeL0(segment);
+            resizeL0(realSegmentIndex);
         }
 
-        if (_navyData[segment].Length == 0)
+        if (_navyData[realSegmentIndex].Length == 0)
         {
-            var values = _values[segment];
+            var values = _values[realSegmentIndex];
             var itemIndex = (int)index & (SegmentSize - 1);
 
             if (itemIndex >= values.Length)
             {
                 if (itemIndex <= values.Length + 4)
                 {
-                    Array.Resize(ref values, Math.Max(values.Length * 2, 8));
+                    Array.Resize(ref values, Math.Min(SegmentSize, Math.Max(values.Length * 2, 8)));
 
-                    _values[segment] = values;
+                    _values[realSegmentIndex] = values;
                 }
                 else
                 {
-                    rebuildSegmentToSparse(segment, values);
+                    rebuildSegmentToSparse(realSegmentIndex, values);
 
-                    return ref getFromTree(index, false, out got, segment);
+                    return ref getFromTree(index, false, out got, realSegmentIndex);
                 }
             }
 
@@ -154,11 +166,11 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
             return ref values[itemIndex];
         }
 
-        return ref getFromTree(index, false, out got, segment);
+        return ref getFromTree(index, false, out got, realSegmentIndex);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private void rebuildSegmentToSparse(uint segment, TValue[] values)
+    private void rebuildSegmentToSparse(int realSegmentIndex, TValue[] values)
     {
         var oldValues = values;
         var len = oldValues.Length;
@@ -169,235 +181,351 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
             len *= 2;
 
         values = new TValue[len];
-        _values[segment] = values;
-        _navyData[segment] = new NavyItem[len];
+        _values[realSegmentIndex] = values;
+        _navyData[realSegmentIndex] = new NavyItem[len];
 
-        var bias = segment * SegmentSize;
-        for (var valueIndex = 0; valueIndex < oldValues.Length; valueIndex++)
+        var bias = realSegmentIndex * SegmentSize;
+
+        if (typeof(TValue).IsClass)
         {
-            getFromTree((uint)(valueIndex + bias), false, out _, segment) = oldValues[valueIndex];
+            for (var valueIndex = 0; valueIndex < oldValues.Length; valueIndex++)
+            {
+                if (oldValues[valueIndex] is not null)
+                    getFromTree((uint)(valueIndex + bias), false, out _, realSegmentIndex) = oldValues[valueIndex];
+            }
+        }
+        else
+        {
+            for (var valueIndex = 0; valueIndex < oldValues.Length; valueIndex++)
+            {
+                getFromTree((uint)(valueIndex + bias), false, out _, realSegmentIndex) = oldValues[valueIndex];
+            }
         }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private void resizeL0(uint segment)
+    private void resizeL0(int newRealSegmentsCount)
     {
-        Array.Resize(ref _navyData, 2 << NumberUtils.IntLog(segment));
+        Array.Resize(ref _navyData, newRealSegmentsCount is 0 ? 1 : 2 << NumberUtils.IntLog(newRealSegmentsCount));
+        Array.Resize(ref _segmentsNavyData, _navyData.Length);
         Array.Resize(ref _values, _navyData.Length);
         Array.Resize(ref _used, _navyData.Length);
 
         for (var i = _navyData.Length - 1; i >= 0 && _navyData[i] is null; i--)
-            _navyData[i] = Array.Empty<NavyItem>();
+            _navyData[i] = [];
 
         for (var i = _values.Length - 1; i >= 0 && _values[i] is null; i--)
         {
-            _values[i] = Array.Empty<TValue>();
+            _values[i] = [];
         }
     }
 
-    private (int segmentIndex, int itemIndex) findNearest(long index, bool notLess)
+
+    private enum FindNearestMode { NotLess, NotMore }
+    private (int realSegmentIndex, int virtualSegmentIndex, int realItemIndex) findNearest(long index, FindNearestMode mode)
     {
-        uint unsignedIndex = (uint)index;
+        var navy = _segmentsNavyData;
 
-        var segment = (int)(unsignedIndex / SegmentSize);
+        if (navy.Length == 0)
+            return (-1, -1, -1);
 
-        if (_navyData.Length <= segment)
+        var virtualSegmentIndex = (uint)index / SegmentSize;
+        var mask = (int)((1L << 31) / SegmentSize);
+        var firstTry = _segmentsCount > index;
+        var i = firstTry ? (int)index : 0;
+        int nextIndex;
+        var realSegmentIndex = -1;
+        var alterI = -1;
+
+        if (mode is FindNearestMode.NotLess)
         {
-            if (notLess)
+            while (true)
             {
-                return (-1, -1);
-            }
-
-            segment = _navyData.Length - 1;
-            index = (segment + 1) * SegmentSize - 1;
-        }
-
-        while (segment >= 0
-            && segment < _navyData.Length
-            && (_values[segment].Length == 0))
-        {
-            if (notLess)
-                segment++;
-            else
-                segment--;
-        }
-
-        if (segment < 0 || segment >= _navyData.Length)
-        {
-            return (-1, -1);
-        }
-
-        if (_navyData[segment].Length == 0)
-        {
-            var itemIndex = (int)index & (SegmentSize - 1);
-
-            if (notLess)
-            {
-                if (_values[segment].Length > itemIndex)
+                ref var navyItem = ref navy[i];
+                if (navyItem.index == virtualSegmentIndex)
                 {
-                    return (segment, itemIndex);
-                }
+                    realSegmentIndex = i;
 
-                segment++;
-                while (segment < _navyData.Length
-                    && (_values[segment] is null || _values[segment].Length == 0))
-                    segment++;
-
-                if (segment >= _navyData.Length)
-                {
-                    return (-1, -1);
-                }
-
-                return (segment, 0);
-            }
-            else
-            {
-                if (_values[segment].Length < itemIndex)
-                {
-                    return (segment, _values[segment].Length - 1);
-                }
-            }
-
-            return (segment, itemIndex);
-        }
-
-        var mask = SegmentSize >> 1;
-        var navy = _navyData[segment];
-
-        int i = (int)(unsignedIndex & (mask << 1) - 1);
-        if (i < navy.Length && navy[i].index == unsignedIndex)
-        {
-            return (segment, i);
-        }
-
-        i = 0;
-
-        short oneContinueIndex = 0;
-        short zeroContinueIndex = 0;
-
-        short ni;
-        while (true)
-        {
-            ref var navyItem = ref navy[i];
-            if (navyItem.index > unsignedIndex)
-            {
-                if (notLess)
-                {
-                    return (segment, i);
-                }
-                else
-                {
-                    segment--;
-                    while (segment >= 0 && _values[segment].Length == 0)
+                    if (_navyData[realSegmentIndex].Length == 0)
                     {
-                        segment--;
-                    }
-
-                    if (segment < 0 || _values[segment].Length == 0)
-                    {
-                        return (-1, -1);
-                    }
-
-                    navy = _navyData[segment];
-
-                    if (navy.Length == 0)
-                    {
-                        return (segment, _values[segment].Length - 1);
-                    }
-
-                    i = 0;
-                    mask = int.MaxValue;
-                    continue;
-                }
-            }
-            else if (navyItem.index < unsignedIndex)
-            {
-                var isZero = (index & mask) == 0;
-
-                if (isZero)
-                {
-                    if (navyItem.oneContinue != 0)
-                        oneContinueIndex = navyItem.oneContinue;
-                }
-                else
-                {
-                    if (navyItem.zeroContinue != 0)
-                        zeroContinueIndex = navyItem.zeroContinue;
-                }
-
-                ni = isZero ? navyItem.zeroContinue : navyItem.oneContinue;
-
-                if (ni == 0)
-                {
-                    if (notLess && oneContinueIndex != 0)
-                    {
-                        mask = 0;
-                        ni = oneContinueIndex;
-                        oneContinueIndex = 0;
-                    }
-                    else if (!notLess && zeroContinueIndex != 0)
-                    {
-                        mask = int.MaxValue;
-                        ni = zeroContinueIndex;
-                        zeroContinueIndex = 0;
+                        if (_values[realSegmentIndex].Length > (int)(index & (SegmentSize - 1)))
+                        {
+                            return (realSegmentIndex, (int)navyItem.index, (int)(index & (SegmentSize - 1)));
+                        }
                     }
                     else
                     {
-                        if (notLess)
+                        mask = SegmentSize >> 1;
+                        var n = _navyData[realSegmentIndex][0];
+                        var itemIndex = 0;
+                        while (true)
                         {
-                            segment++;
-                            while (segment < _navyData.Length && _values[segment].Length == 0)
+                            if (n.index >= index)
+                                return (realSegmentIndex, (int)navyItem.index, itemIndex);
+
+                            itemIndex = (index & mask) == 0 ? n.zeroContinue : n.oneContinue;
+
+                            if (itemIndex == 0)
                             {
-                                segment++;
+                                if (n.oneContinue == 0)
+                                    break;
+
+                                nextIndex = n.oneContinue;
+                                mask = 0;
                             }
 
-                            if (segment >= _navyData.Length || _values[segment].Length == 0)
-                            {
-                                return (-1, -1);
-                            }
-
-                            return (segment, 0);
+                            mask >>= 1;
+                            n = _navyData[realSegmentIndex][itemIndex];
                         }
+                    }
+                }
+                
+                if (firstTry)
+                {
+                    firstTry = false;
+                    i = 0;
+                    continue;
+                }
 
-                        return (segment, i);
+                if (navyItem.index > virtualSegmentIndex)
+                {
+                    // дальнейшее продвижение будет только увеличивать индекс
+                    virtualSegmentIndex = navyItem.index;
+                    realSegmentIndex = i;
+                    return (realSegmentIndex, (int)virtualSegmentIndex, 0);
+                }
+
+                var isZero = (virtualSegmentIndex & mask) == 0;
+                nextIndex = isZero ? navyItem.zeroContinue : navyItem.oneContinue;
+
+                if (nextIndex == 0)
+                {
+                    if (navyItem.oneContinue == 0)
+                    {
+                        if (alterI == -1)
+                            return (-1, -1, -1);
+
+                        mask = 0;
+                        i = alterI;
+                        continue;
+                    }
+                    else
+                    {
+                        mask = 0;
+                        nextIndex = navyItem.oneContinue;
                     }
                 }
 
-                if (!notLess && navy[ni].index > index)
-                {
-                    return (segment, i);
-                }
+                if (isZero && navyItem.oneContinue != 0)
+                    alterI = navyItem.oneContinue;
 
-                i = ni;
+                i = nextIndex;
                 mask >>= 1;
             }
-            else
+        }
+        else
+        {
+            while (true)
             {
-                return (segment, i);
+                ref var navyItem = ref navy[i];
+                if (navyItem.index == virtualSegmentIndex)
+                {
+                    realSegmentIndex = i;
+
+                    if (_navyData[realSegmentIndex].Length == 0)
+                    {
+                        return (realSegmentIndex, (int)navyItem.index, Math.Min(_values[realSegmentIndex].Length - 1, (int)(index & (SegmentSize - 1))));
+                    }
+                    else
+                    {
+                        mask = SegmentSize >> 1;
+                        var n = _navyData[realSegmentIndex][0];
+                        var itemIndex = 0;
+                        while (true)
+                        {
+                            if (n.index == index)
+                                return (realSegmentIndex, (int)navyItem.index, itemIndex);
+
+                            if (n.index > index)
+                                return (-1, -1, -1);
+
+                            itemIndex = (index & mask) == 0 ? n.zeroContinue : n.oneContinue;
+
+                            if (itemIndex == 0)
+                            {
+                                if (n.zeroContinue == 0)
+                                    return (realSegmentIndex, (int)navyItem.index, itemIndex);
+
+                                nextIndex = n.zeroContinue;
+                                mask = int.MaxValue;
+                            }
+
+                            mask >>= 1;
+                            n = _navyData[realSegmentIndex][itemIndex];
+                        }
+                    }
+                }
+                
+                if (firstTry)
+                {
+                    firstTry = false;
+                    i = 0;
+                    continue;
+                }
+
+                if (navyItem.index > virtualSegmentIndex)
+                {
+                    return (-1, -1, -1);
+                }
+
+                var isZero = (virtualSegmentIndex & mask) == 0;
+                nextIndex = isZero ? navyItem.zeroContinue : navyItem.oneContinue;
+
+                if (nextIndex == 0)
+                {
+                    if (isZero)
+                    {
+                        if (alterI == -1)
+                            return (-1, -1, -1);
+
+                        mask = int.MaxValue;
+                        i = alterI;
+
+                        continue;
+                    }
+                }
+
+                if (navy[nextIndex].index > virtualSegmentIndex
+                    || (_navyData[nextIndex].Length > 0 && _navyData[nextIndex][0].index > index))
+                {
+                    realSegmentIndex = i;
+
+                    if (_navyData[realSegmentIndex].Length == 0)
+                        return (realSegmentIndex, (int)navyItem.index, _values[realSegmentIndex].Length - 1);
+                    else
+                    {
+                        var n = _navyData[realSegmentIndex][0];
+                        var itemIndex = 0;
+                        while (true)
+                        {
+                            if (n.oneContinue != 0)
+                                n = _navyData[realSegmentIndex][itemIndex = n.oneContinue];
+                            else if (n.zeroContinue != 0)
+                                n = _navyData[realSegmentIndex][itemIndex = n.zeroContinue];
+                            else
+                                break;
+                        }
+
+                        return (realSegmentIndex, (int)navyItem.index, itemIndex);
+                    }
+                }
+
+                if (!isZero && navyItem.zeroContinue != 0)
+                    alterI = navyItem.zeroContinue;
+
+                i = nextIndex;
+                mask >>= 1;
             }
+        }
+    }
+
+    private int segmentIndexRecalc(uint index, bool forRead)
+    {
+        var navy = _segmentsNavyData;
+
+        if (navy.Length == 0)
+        {
+            if (forRead)
+                return -1;
+
+            _segmentsNavyData = [new() { index = index }];
+            _segmentsCount = 1;
+            return 0;
+        }
+
+        if (index < _segmentsCount && navy[index].index == index)
+            return (int)index;
+
+        var mask = (int)((1L << 31) / SegmentSize);
+        var i = 0;
+        int nextIndex;
+        while (true)
+        {
+            var navyItem = navy[i];
+            if (navyItem.index == index)
+                return i;
+
+            if (navyItem.index > index)
+            {
+                if (forRead)
+                    return -1;
+
+                var oldIndex = navyItem.index;
+                var oldNavyData = _navyData[i];
+                var oldValues = _values[i];
+                var oldUsed = _used[i];
+
+                _navyData[i] = [];
+                _values[i] = [];
+                _used[i] = 0;
+                navy[i].index = index;
+
+                nextIndex = segmentIndexRecalc(oldIndex, false);
+
+                _segmentsNavyData[nextIndex].index = oldIndex;
+                _navyData[nextIndex] = oldNavyData;
+                _values[nextIndex] = oldValues;
+                _used[nextIndex] = oldUsed;
+
+                return i;
+            }
+
+            var isNotZero = (index & mask) != 0;
+            nextIndex = isNotZero ? navyItem.oneContinue : navyItem.zeroContinue;
+
+            if (nextIndex == 0)
+            {
+                if (forRead)
+                    return -1;
+
+                _segmentsCount = checked((ushort)(_segmentsCount + 1));
+                nextIndex = _segmentsCount - 1;
+
+                if (isNotZero)
+                    navy[i].oneContinue = (ushort)nextIndex;
+                else
+                    navy[i].zeroContinue = (ushort)nextIndex;
+
+                if (nextIndex >= navy.Length)
+                {
+                    var newSize = nextIndex * 2;
+                    resizeL0(newSize);
+
+                    navy = _segmentsNavyData;
+                }
+
+                navy[nextIndex].index = index;
+            }
+
+            i = nextIndex;
+            mask >>= 1;
         }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private ref TValue getFromTree(uint index, bool forRead, out bool got, uint segment)
+    private ref TValue getFromTree(uint index, bool forRead, out bool got, int realSegmentIndex)
     {
         var mask = SegmentSize >> 1;
-        var values = _values[segment];
-        var navy = _navyData[segment];
+        var values = _values[realSegmentIndex];
+        var navy = _navyData[realSegmentIndex];
 
         var i = (int)index & (SegmentSize - 1);
+
         if (i < navy.Length && navy[i].index == index)
         {
-            if (i == 0 && _used[segment] == 0)
+            if (!forRead && i == 0 && _used[realSegmentIndex] == 0)
             {
-                if (forRead)
-                {
-                    got = false;
-                    _fictive = default;
-                    return ref _fictive;
-                }
-
-                _used[segment] = 1;
+                _used[realSegmentIndex] = 1;
             }
 
             got = true;
@@ -406,7 +534,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
 
         i = 0;
 
-        short ni;
+        ushort ni;
         while (true)
         {
             ref var navyItem = ref navy[i];
@@ -427,7 +555,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                     if (_pseudoLength <= index)
                         _pseudoLength = index + 1;
 
-                    ni = _used[segment]++;
+                    ni = _used[realSegmentIndex]++;
 
                     if (isNotZero)
                         navyItem.oneContinue = ni;
@@ -437,11 +565,12 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                     if (ni >= navy.Length)
                     {
                         var newSize = ni * 2;
-                        Array.Resize(ref _navyData[segment], newSize);
-                        Array.Resize(ref _values[segment], newSize);
 
-                        navy = _navyData[segment];
-                        values = _values[segment];
+                        Array.Resize(ref _navyData[realSegmentIndex], newSize);
+                        Array.Resize(ref _values[realSegmentIndex], newSize);
+
+                        navy = _navyData[realSegmentIndex];
+                        values = _values[realSegmentIndex];
                     }
 
                     navy[ni].index = index;
@@ -469,7 +598,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                 if (oldIndex < _pseudoLength)
                     this[(int)oldIndex] = oldValue!;
 
-                values = _values[segment];
+                values = _values[realSegmentIndex];
                 values[i] = default!;
 
                 got = true;
@@ -531,29 +660,30 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
 
     public void TrimLength()
     {
-        var coord = findNearest(_pseudoLength - 1, false);
+        var coord = findNearest(_pseudoLength - 1, FindNearestMode.NotMore);
         var externalIndex = getExternalIndex(coord);
         _pseudoLength = (uint)externalIndex + 1;
     }
 
-    private long getExternalIndex((int segmentIndex, int itemIndex) coord)
+    private long getExternalIndex((int realSegmentIndex, int virtualSegmentIndex, int itemIndex) coord)
     {
-        if (coord.segmentIndex == -1)
+        if (coord.itemIndex == -1)
             return -1;
 
-        var navyItems = _navyData[coord.segmentIndex];
+        var navyItems = _navyData[coord.realSegmentIndex];
         if (navyItems.Length != 0)
             return navyItems[coord.itemIndex].index;
 
-        var externalIndex = coord.segmentIndex * SegmentSize + (uint)coord.itemIndex;
+        var externalIndex = coord.virtualSegmentIndex * SegmentSize + (uint)coord.itemIndex;
         return externalIndex;
     }
 
     public void Clear()
     {
-        _values = Array.Empty<TValue[]>();
-        _navyData = Array.Empty<NavyItem[]>();
-        _used = Array.Empty<short>();
+        _segmentsNavyData = [];
+        _values = [];
+        _navyData = [];
+        _used = [];
         _pseudoLength = 0;
     }
 
@@ -632,30 +762,30 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
             return -1;
         }
 
-        var coord = findNearest(index, true);
+        var coord = findNearest(index, FindNearestMode.NotLess);
 
-        if (coord.itemIndex == -1)
+        if (coord.realItemIndex == -1)
         {
             value = default;
             return -1;
         }
 
-        value = _values[coord.segmentIndex][coord.itemIndex];
+        value = _values[coord.realSegmentIndex][coord.realItemIndex];
         var externalIndex = getExternalIndex(coord);
         return externalIndex;
     }
 
     public long NearestNotMore(long index, out TValue value)
     {
-        var coord = findNearest(index, false);
+        var coord = findNearest(index, FindNearestMode.NotMore);
 
-        if (coord.itemIndex == -1)
+        if (coord.realItemIndex == -1)
         {
             value = default;
             return -1;
         }
 
-        value = _values[coord.segmentIndex][coord.itemIndex];
+        value = _values[coord.realSegmentIndex][coord.realItemIndex];
         var externalIndex = getExternalIndex(coord);
         return externalIndex;
     }
@@ -726,7 +856,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
 
             while (index >= 0)
             {
-                var coord = findNearest(index, false);
+                var coord = findNearest(index, FindNearestMode.NotMore);
                 index = getExternalIndex(coord);
 
                 if (!lastYielded)
@@ -883,9 +1013,13 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
             result._values[i] = _values[i]?.Clone() as TValue[];
         }
 
-        result._used = _used.Clone() as short[];
+        result._used = _used.Clone() as ushort[];
 
         result._pseudoLength = _pseudoLength;
+
+        result._segmentsCount = _segmentsCount;
+
+        result._segmentsNavyData = _segmentsNavyData.Clone() as NavyItem[];
 
         return result;
     }
