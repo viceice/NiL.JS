@@ -51,7 +51,7 @@ public class StringMap<TValue> : IDictionary<string, TValue>
 #endif
     }
 
-    private const int InitialSize = 2;
+    private const int InitialSize = 4;
     private const int MaxAsListSize = 4;
 
     private int _version;
@@ -595,15 +595,18 @@ public class StringMap<TValue> : IDictionary<string, TValue>
 
     public IEnumerator<KeyValuePair<string, TValue>> GetEnumerator()
     {
-        List<KeyValuePair<uint, string>> numbers = null;
         uint exprected = 0;
 
-        var i = 0;
-        while (i < _eicount)
+        var yielded = false;
+        do
         {
+            yielded = false;
             var prevVersion = _version;
 
-            for (; i < _records.Length; i++)
+            var minDelta = uint.MaxValue;
+            var indexOfMinDelta = -1;
+
+            for (var i = 0; i < _records.Length; i++)
             {
                 int index = i;
                 if (_records[index].key != null
@@ -613,48 +616,38 @@ public class StringMap<TValue> : IDictionary<string, TValue>
                     {
                         yield return new KeyValuePair<string, TValue>(_records[index].key, _records[index].value);
                         exprected++;
+                        yielded = true;
+                        minDelta = uint.MinValue;
+                        indexOfMinDelta = -1;
                     }
-                    else
+                    else if (number > exprected && (number - exprected < minDelta || (exprected == 0 && number == uint.MaxValue)))
                     {
-                        if (numbers == null)
-                            numbers = new List<KeyValuePair<uint, string>>();
-
-                        numbers.Add(new KeyValuePair<uint, string>(number, _records[i].key));
+                        minDelta = number - exprected;
+                        indexOfMinDelta = index;
                     }
                 }
             }
 
-            if (prevVersion != _version)
+            if (indexOfMinDelta >= 0)
             {
-                i = 0;
-            }
+                yield return new KeyValuePair<string, TValue>(_records[indexOfMinDelta].key, _records[indexOfMinDelta].value);
 
-            if (numbers != null)
-            {
-                numbers.Sort((x, y) => x.Key.CompareTo(y.Key));
+                if (exprected + minDelta == uint.MaxValue)
+                    break;
 
-                for (var ni = 0; ni < numbers.Count && prevVersion == _version; ni++)
-                {
-                    if (numbers[ni].Key >= exprected && TryGetValue(numbers[ni].Value, out var item))
-                    {
-                        yield return new KeyValuePair<string, TValue>(numbers[ni].Value, item);
-                        exprected = numbers[ni].Key + 1;
-                    }
-                }
+                exprected += minDelta + 1;
+                yielded = true;
             }
         }
+        while (yielded);
 
-        i = 0;
-        while (i < _eicount)
+        for (var i = 0; i < _eicount; i++)
         {
-            for (; i < _eicount; i++)
+            int index = _existsedIndexes[i];
+            if (_records[index].key != null
+                && (!uint.TryParse(_records[index].key, NumberStyles.Integer, CultureInfo.InvariantCulture, out _)))
             {
-                int index = _existsedIndexes[i];
-                if (_records[index].key != null
-                    && (!uint.TryParse(_records[index].key, NumberStyles.Integer, CultureInfo.InvariantCulture, out _)))
-                {
-                    yield return new KeyValuePair<string, TValue>(_records[index].key, _records[index].value);
-                }
+                yield return new KeyValuePair<string, TValue>(_records[index].key, _records[index].value);
             }
         }
     }

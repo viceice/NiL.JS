@@ -388,8 +388,7 @@ public class JSValue : IEnumerable<KeyValuePair<string, JSValue>>, IComparable<J
 #if !NET40
         [MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
 #endif
-        get
-        { return _valueType >= JSValueType.Undefined; }
+        get => _valueType >= JSValueType.Undefined;
     }
 
     [Hidden]
@@ -399,10 +398,7 @@ public class JSValue : IEnumerable<KeyValuePair<string, JSValue>>, IComparable<J
 #if !NET40
         [MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
 #endif
-        get
-        {
-            return _valueType > JSValueType.Undefined;
-        }
+        get => _valueType > JSValueType.Undefined;
     }
 
     [Hidden]
