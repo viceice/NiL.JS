@@ -186,7 +186,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
 
         _navyData[realSegmentIndex] = new NavyItem[len];
 
-        var bias = realSegmentIndex * SegmentSize;
+        var bias = _segmentsNavyData[realSegmentIndex].index * SegmentSize;
 
         if (typeof(TValue).IsClass)
         {
@@ -266,6 +266,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                         mask = SegmentSize >> 1;
                         var n = _navyData[realSegmentIndex][0];
                         var itemIndex = 0;
+                        var nestedAlterI = -1;
                         while (true)
                         {
                             if (n.index >= index)
@@ -276,11 +277,23 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                             if (itemIndex == 0)
                             {
                                 if (n.oneContinue == 0)
-                                    break;
+                                {
+                                    if (nestedAlterI == -1)
+                                        break;
 
-                                nextIndex = n.oneContinue;
+                                    mask = 0;
+                                    n = _navyData[realSegmentIndex][nestedAlterI];
+                                    itemIndex = nestedAlterI;
+                                    nestedAlterI = -1;
+                                    continue;
+                                }
+
+                                itemIndex = n.oneContinue;
                                 mask = 0;
                             }
+
+                            if (itemIndex != n.oneContinue && n.oneContinue != 0)
+                                nestedAlterI = n.oneContinue;
 
                             mask >>= 1;
                             n = _navyData[realSegmentIndex][itemIndex];
@@ -364,7 +377,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                                 if (n.zeroContinue == 0)
                                     return (realSegmentIndex, (int)navyItem.index, itemIndex);
 
-                                nextIndex = n.zeroContinue;
+                                itemIndex = n.zeroContinue;
                                 mask = int.MaxValue;
                             }
 
