@@ -92,17 +92,15 @@ public sealed class Call : Expression
             func = function._oValue as Function;
 
         if (func == null)
-        {
             return callCallable(context, targetObject, function);
-        }
 
         if (_allowTCO
             && _callMode == 0
-            && (func._functionDefinition._kind != FunctionKind.Generator)
-            && (func._functionDefinition._kind != FunctionKind.MethodGenerator)
-            && (func._functionDefinition._kind != FunctionKind.AnonymousGenerator)
             && context._owner != null
-            && func == context._owner._oValue)
+            && func == context._owner._oValue
+            && (func._functionDefinition._kind is not FunctionKind.Generator 
+                                              and not FunctionKind.MethodGenerator 
+                                              and not FunctionKind.AnonymousGenerator))
         {
             tailCall(context, func);
             context._objectSource = targetObject;

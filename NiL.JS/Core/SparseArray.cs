@@ -25,7 +25,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
         }
     }
 
-    private const int SegmentSize = 8192;
+    private const int SegmentSize = 16384;
 
     private static TValue _fictive;
 
@@ -172,33 +172,41 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void rebuildSegmentToSparse(int realSegmentIndex, TValue[] values)
     {
-        var oldValues = values;
-        var len = oldValues.Length;
+        var oldLen = values.Length;
+        var len = values.Length;
 
-        if (oldValues.Length == 0)
-            len = 8;
-        else if (oldValues[oldValues.Length - 1] is not null)
-            len *= 2;
+        if (values.Length == 0)
+            len = 2;
 
-        values = new TValue[len];
-        _values[realSegmentIndex] = values;
+        if (values.Length != len)
+        {
+            Array.Resize(ref values, len);
+            _values[realSegmentIndex] = values;
+        }
+
         _navyData[realSegmentIndex] = new NavyItem[len];
 
         var bias = realSegmentIndex * SegmentSize;
 
         if (typeof(TValue).IsClass)
         {
-            for (var valueIndex = 0; valueIndex < oldValues.Length; valueIndex++)
+            for (var valueIndex = 0; valueIndex < oldLen; valueIndex++)
             {
-                if (oldValues[valueIndex] is not null)
-                    getFromTree((uint)(valueIndex + bias), false, out _, realSegmentIndex) = oldValues[valueIndex];
+                if (values[valueIndex] is not null)
+                {
+                    var value = values[valueIndex];
+                    values[valueIndex] = default;
+                    getFromTree((uint)(valueIndex + bias), false, out _, realSegmentIndex) = value;
+                }
             }
         }
         else
         {
-            for (var valueIndex = 0; valueIndex < oldValues.Length; valueIndex++)
+            for (var valueIndex = 0; valueIndex < oldLen; valueIndex++)
             {
-                getFromTree((uint)(valueIndex + bias), false, out _, realSegmentIndex) = oldValues[valueIndex];
+                var value = values[valueIndex];
+                values[valueIndex] = default;
+                getFromTree((uint)(valueIndex + bias), false, out _, realSegmentIndex) = value;
             }
         }
     }

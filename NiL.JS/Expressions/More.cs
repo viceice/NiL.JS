@@ -8,7 +8,7 @@ namespace NiL.JS.Expressions;
 #endif
 public class More : Expression
 {
-    private bool trueMore;
+    private bool _trueMore;
 
     protected internal override PredictedType ResultType
     {
@@ -26,7 +26,7 @@ public class More : Expression
     public More(Expression first, Expression second)
         : base(first, second, true)
     {
-        trueMore = this.GetType() == typeof(More);
+        _trueMore = GetType() == typeof(More);
     }
 
     internal static bool Check(JSValue first, JSValue second, bool lessOrEqual)
@@ -233,33 +233,33 @@ public class More : Expression
 
     public override JSValue Evaluate(Context context)
     {
-        var f = _left.Evaluate(context);
+        var left = _left.Evaluate(context);
+
         var temp = _tempContainer;
         _tempContainer = null;
         if (temp == null)
             temp = new JSValue { _attributes = JSValueAttributesInternal.Temporary };
-        temp._valueType = f._valueType;
-        temp._iValue = f._iValue;
-        temp._dValue = f._dValue;
-        temp._oValue = f._oValue;
-        var s = _right.Evaluate(context);
+        temp._valueType = left._valueType;
+        temp._iValue = left._iValue;
+        temp._oValue = left._oValue;
+        temp._dValue = left._dValue;
+        
+        var right = _right.Evaluate(context);
+
         _tempContainer = temp;
-        if (_tempContainer._valueType == JSValueType.Integer && s._valueType == JSValueType.Integer)
+        
+        if (_tempContainer._valueType == JSValueType.Integer && right._valueType == JSValueType.Integer)
+            return _tempContainer._iValue > right._iValue;
+
+        if (_tempContainer._valueType == JSValueType.Double && right._valueType == JSValueType.Double)
         {
-            _tempContainer._valueType = JSValueType.Boolean;
-            _tempContainer._iValue = _tempContainer._iValue > s._iValue ? 1 : 0;
-            return _tempContainer;
-        }
-        if (_tempContainer._valueType == JSValueType.Double && s._valueType == JSValueType.Double)
-        {
-            temp._valueType = JSValueType.Boolean;
-            if (double.IsNaN(temp._dValue) || double.IsNaN(s._dValue))
-                temp._iValue = trueMore ? 0 : 1;
+            if (double.IsNaN(temp._dValue) || double.IsNaN(right._dValue))
+                return !_trueMore;
             else
-                temp._iValue = temp._dValue > s._dValue ? 1 : 0;
-            return _tempContainer;
+                return temp._dValue > right._dValue;
         }
-        return Check(_tempContainer, s, !trueMore);
+        
+        return Check(_tempContainer, right, !_trueMore);
     }
 
     public override void Optimize(ref CodeNode _this, FunctionDefinition owner, InternalCompilerMessageCallback message, Options opts, FunctionInfo stats)
