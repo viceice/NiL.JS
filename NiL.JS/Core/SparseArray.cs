@@ -16,12 +16,12 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
     private struct NavyItem
     {
         public uint index;
-        public ushort zeroContinue;
-        public ushort oneContinue;
+        public ushort zeroNext;
+        public ushort oneNext;
 
         public override string ToString()
         {
-            return index + "[" + zeroContinue + ";" + oneContinue + "]";
+            return index + "[" + zeroNext + ";" + oneNext + "]";
         }
     }
 
@@ -247,6 +247,8 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
 
         if (mode is FindNearestMode.NotLess)
         {
+            var isZeroBranch = false;
+
             while (true)
             {
                 ref var navyItem = ref navy[i];
@@ -263,7 +265,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                     }
                     else
                     {
-                        mask = SegmentSize >> 1;
+                        var nestedMask = SegmentSize >> 1;
                         var n = _navyData[realSegmentIndex][0];
                         var itemIndex = 0;
                         var nestedAlterI = -1;
@@ -272,30 +274,30 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                             if (n.index >= index)
                                 return (realSegmentIndex, (int)navyItem.index, itemIndex);
 
-                            itemIndex = (index & mask) == 0 ? n.zeroContinue : n.oneContinue;
+                            itemIndex = (index & nestedMask) == 0 ? n.zeroNext : n.oneNext;
 
                             if (itemIndex == 0)
                             {
-                                if (n.oneContinue == 0)
+                                if (n.oneNext == 0)
                                 {
                                     if (nestedAlterI == -1)
                                         break;
 
-                                    mask = 0;
+                                    nestedMask = 0;
                                     n = _navyData[realSegmentIndex][nestedAlterI];
                                     itemIndex = nestedAlterI;
                                     nestedAlterI = -1;
                                     continue;
                                 }
 
-                                itemIndex = n.oneContinue;
-                                mask = 0;
+                                itemIndex = n.oneNext;
+                                nestedMask = 0;
                             }
 
-                            if (itemIndex != n.oneContinue && n.oneContinue != 0)
-                                nestedAlterI = n.oneContinue;
+                            if (itemIndex != n.oneNext && n.oneNext != 0)
+                                nestedAlterI = n.oneNext;
 
-                            mask >>= 1;
+                            nestedMask >>= 1;
                             n = _navyData[realSegmentIndex][itemIndex];
                         }
                     }
@@ -317,11 +319,18 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                 }
 
                 var isZero = (virtualSegmentIndex & mask) == 0;
-                nextIndex = isZero ? navyItem.zeroContinue : navyItem.oneContinue;
+                nextIndex = isZero ? navyItem.zeroNext : navyItem.oneNext;
 
                 if (nextIndex == 0)
                 {
-                    if (navyItem.oneContinue == 0)
+                    if (navyItem.index == virtualSegmentIndex && navyItem.zeroNext != 0)
+                    {
+                        isZeroBranch = true;
+                        i = navyItem.zeroNext;
+                        mask = 0;
+                        continue;
+                    }
+                    else if (navyItem.oneNext == 0)
                     {
                         if (alterI == -1)
                             return (-1, -1, -1);
@@ -333,12 +342,12 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                     else
                     {
                         mask = 0;
-                        nextIndex = navyItem.oneContinue;
+                        nextIndex = navyItem.oneNext;
                     }
                 }
 
-                if (isZero && navyItem.oneContinue != 0)
-                    alterI = navyItem.oneContinue;
+                if (isZero && navyItem.oneNext != 0 && !isZeroBranch)
+                    alterI = navyItem.oneNext;
 
                 i = nextIndex;
                 mask >>= 1;
@@ -370,14 +379,14 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                             if (n.index > index)
                                 return (-1, -1, -1);
 
-                            itemIndex = (index & mask) == 0 ? n.zeroContinue : n.oneContinue;
+                            itemIndex = (index & mask) == 0 ? n.zeroNext : n.oneNext;
 
                             if (itemIndex == 0)
                             {
-                                if (n.zeroContinue == 0)
+                                if (n.zeroNext == 0)
                                     return (realSegmentIndex, (int)navyItem.index, itemIndex);
 
-                                itemIndex = n.zeroContinue;
+                                itemIndex = n.zeroNext;
                                 mask = int.MaxValue;
                             }
 
@@ -400,7 +409,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                 }
 
                 var isZero = (virtualSegmentIndex & mask) == 0;
-                nextIndex = isZero ? navyItem.zeroContinue : navyItem.oneContinue;
+                nextIndex = isZero ? navyItem.zeroNext : navyItem.oneNext;
 
                 if (nextIndex == 0)
                 {
@@ -429,10 +438,10 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                         var itemIndex = 0;
                         while (true)
                         {
-                            if (n.oneContinue != 0)
-                                n = _navyData[realSegmentIndex][itemIndex = n.oneContinue];
-                            else if (n.zeroContinue != 0)
-                                n = _navyData[realSegmentIndex][itemIndex = n.zeroContinue];
+                            if (n.oneNext != 0)
+                                n = _navyData[realSegmentIndex][itemIndex = n.oneNext];
+                            else if (n.zeroNext != 0)
+                                n = _navyData[realSegmentIndex][itemIndex = n.zeroNext];
                             else
                                 break;
                         }
@@ -441,8 +450,8 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                     }
                 }
 
-                if (!isZero && navyItem.zeroContinue != 0)
-                    alterI = navyItem.zeroContinue;
+                if (!isZero && navyItem.zeroNext != 0)
+                    alterI = navyItem.zeroNext;
 
                 i = nextIndex;
                 mask >>= 1;
@@ -502,7 +511,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
             }
 
             var isNotZero = (index & mask) != 0;
-            nextIndex = isNotZero ? navyItem.oneContinue : navyItem.zeroContinue;
+            nextIndex = isNotZero ? navyItem.oneNext : navyItem.zeroNext;
 
             if (nextIndex == 0)
             {
@@ -513,9 +522,9 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                 nextIndex = _segmentsCount - 1;
 
                 if (isNotZero)
-                    navy[i].oneContinue = (ushort)nextIndex;
+                    navy[i].oneNext = (ushort)nextIndex;
                 else
-                    navy[i].zeroContinue = (ushort)nextIndex;
+                    navy[i].zeroNext = (ushort)nextIndex;
 
                 if (nextIndex >= navy.Length)
                 {
@@ -562,7 +571,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
             if (navyItem.index < index)
             {
                 var isNotZero = (index & mask) != 0;
-                ni = isNotZero ? navyItem.oneContinue : navyItem.zeroContinue;
+                ni = isNotZero ? navyItem.oneNext : navyItem.zeroNext;
 
                 if (ni == 0)
                 {
@@ -579,9 +588,9 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                     ni = _used[realSegmentIndex]++;
 
                     if (isNotZero)
-                        navyItem.oneContinue = ni;
+                        navyItem.oneNext = ni;
                     else
-                        navyItem.zeroContinue = ni;
+                        navyItem.zeroNext = ni;
 
                     if (ni >= navy.Length)
                     {
