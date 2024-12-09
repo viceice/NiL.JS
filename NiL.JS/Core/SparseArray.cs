@@ -851,21 +851,23 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
         {
             for (var i = 0; i < _navyData.Length; i++)
             {
+                var realSegmentIndex = (int)_segmentsNavyData[i].index * SegmentSize;
+
                 if (_navyData[i].Length != 0)
                 {
                     for (var j = 0; j < _used[i]; j++)
                     {
-                        yield return new KeyValuePair<int, TValue>(_navyData[i].Length is 0 ? i * SegmentSize + j : (int)_navyData[i][j].index, _values[i][j]!);
+                        yield return new KeyValuePair<int, TValue>(_navyData[i].Length is 0 ? realSegmentIndex + j : (int)_navyData[i][j].index, _values[i][j]!);
                     }
                 }
                 else
                 {
                     for (var j = 0; j < _values[i].Length; j++)
                     {
-                        if (i * SegmentSize + j >= _pseudoLength)
+                        if (realSegmentIndex + j >= _pseudoLength)
                             break;
 
-                        yield return new KeyValuePair<int, TValue>(i * SegmentSize + j, _values[i][j]!);
+                        yield return new KeyValuePair<int, TValue>(realSegmentIndex + j, _values[i][j]!);
                     }
                 }
             }
