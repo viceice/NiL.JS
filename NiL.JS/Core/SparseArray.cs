@@ -25,7 +25,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
         }
     }
 
-    private const int SegmentSize = 16384;
+    private const int SegmentSize = 1024;
 
     private static TValue _fictive;
 
@@ -145,9 +145,13 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
 
             if (itemIndex >= values.Length)
             {
-                if (itemIndex <= values.Length + 4)
+                if (itemIndex <= values.Length + 4 || values.Length * 4 >= SegmentSize)
                 {
-                    Array.Resize(ref values, Math.Min(SegmentSize, Math.Max(values.Length * 2, 8)));
+                    var newSize = Math.Min(SegmentSize, Math.Max(values.Length * 2, 8));
+                    if (newSize <= itemIndex)
+                        newSize *= 2;
+
+                    Array.Resize(ref values, newSize);
 
                     _values[realSegmentIndex] = values;
                 }
@@ -220,10 +224,8 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
         Array.Resize(ref _used, _navyData.Length);
 
         for (var i = _navyData.Length - 1; i >= 0 && _navyData[i] is null; i--)
-            _navyData[i] = [];
-
-        for (var i = _values.Length - 1; i >= 0 && _values[i] is null; i--)
         {
+            _navyData[i] = [];
             _values[i] = [];
         }
     }
@@ -302,7 +304,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                         }
                     }
                 }
-                
+
                 if (firstTry)
                 {
                     firstTry = false;
@@ -395,7 +397,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                         }
                     }
                 }
-                
+
                 if (firstTry)
                 {
                     firstTry = false;
@@ -592,19 +594,42 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                     else
                         navyItem.zeroNext = ni;
 
+                    got = true;
+
                     if (ni >= navy.Length)
                     {
                         var newSize = ni * 2;
 
-                        Array.Resize(ref _navyData[realSegmentIndex], newSize);
-                        Array.Resize(ref _values[realSegmentIndex], newSize);
+                        if (newSize * 2 >= SegmentSize)
+                        {
+                            values = new TValue[SegmentSize];
 
-                        navy = _navyData[realSegmentIndex];
-                        values = _values[realSegmentIndex];
+                            navy = _navyData[realSegmentIndex];
+                            for (var n = 0; n < navy.Length; n++)
+                            {
+                                var relativeIndex = navy[n].index & (SegmentSize - 1);
+                                if (relativeIndex == 0 && n != 0)
+                                    break;
+
+                                values[relativeIndex] = _values[realSegmentIndex][n];
+                            }
+
+                            _values[realSegmentIndex] = values;
+                            _navyData[realSegmentIndex] = [];
+
+                            return ref values[index & (SegmentSize - 1)];
+                        }
+                        else
+                        {
+                            Array.Resize(ref navy, newSize);
+                            Array.Resize(ref values, newSize);
+
+                            _navyData[realSegmentIndex] = navy;
+                            _values[realSegmentIndex] = values;
+                        }
                     }
 
                     navy[ni].index = index;
-                    got = true;
                     return ref values[ni];
                 }
 
@@ -624,14 +649,17 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                 var oldValue = values[i];
 
                 navyItem.index = index;
+                values[i] = default!;
 
                 if (oldIndex < _pseudoLength)
                     this[(int)oldIndex] = oldValue!;
 
-                values = _values[realSegmentIndex];
-                values[i] = default!;
-
                 got = true;
+
+                if (_navyData[realSegmentIndex].Length == 0)
+                    i = (int)(index & (SegmentSize - 1));
+
+                values = _values[realSegmentIndex];
                 return ref values[i];
             }
             else
