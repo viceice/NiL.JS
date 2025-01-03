@@ -148,7 +148,12 @@ public class SparseArrayTests
         var readRounds = 10;
         var readCount = 1000000;
 
+        GC.Collect(2);
+        GC.WaitForFullGCComplete();
+
         var sw = Stopwatch.StartNew();
+
+#if true
         for (var r = 0; r < writeRounds; r++)
             for (var i = 0; i < writeCount; i++)
                 sparseArray[random.Next(1000000)] = i;
@@ -163,36 +168,46 @@ public class SparseArrayTests
                     System.Diagnostics.Debugger.Break();
         Console.WriteLine("random read  " + readRounds + "*" + readCount + ": " + sw.Elapsed);
 
+        GC.Collect(2);
+        GC.WaitForFullGCComplete();
+#endif
+
+        for (int step = 1; step <= 1024; step *= 2)
+        {
+            sparseArray = storage();
+
+            sw.Restart();
+            for (var r = 0; r < writeRounds; r++)
+                for (var i = 0; i < writeCount; i++)
+                    sparseArray[i * step] = i;
+            Console.WriteLine($"step {step} write    " + writeRounds + "*" + writeCount + ": " + sw.Elapsed);
+
+            random = new Random(0x1234);
+
+            sw.Restart();
+            for (var r = 0; r < readRounds; r++)
+                for (var i = 0; i < readCount; i++)
+                    sparseArray.TryGetValue(i * step, out _);
+            Console.WriteLine($"step {step} read     " + readRounds + "*" + readCount + ": " + sw.Elapsed);
+
+            GC.Collect(2);
+            GC.WaitForFullGCComplete();
+        }
+
         sparseArray = storage();
 
         sw.Restart();
         for (var r = 0; r < writeRounds; r++)
             for (var i = 0; i < writeCount; i++)
-                sparseArray[i * 10] = i;
-        Console.WriteLine("step write    " + writeRounds + "*" + writeCount + ": " + sw.Elapsed);
+                sparseArray[writeCount - i - 1] = i;
+        Console.WriteLine("backward write    " + writeRounds + "*" + writeCount + ": " + sw.Elapsed);
 
         random = new Random(0x1234);
 
         sw.Restart();
         for (var r = 0; r < readRounds; r++)
             for (var i = 0; i < readCount; i++)
-                sparseArray.TryGetValue(i * 10, out _);
-        Console.WriteLine("step read     " + readRounds + "*" + readCount + ": " + sw.Elapsed);
-
-        sparseArray = storage();
-
-        sw.Restart();
-        for (var r = 0; r < writeRounds; r++)
-            for (var i = 0; i < writeCount; i++)
-                sparseArray[i] = i;
-        Console.WriteLine("seq write    " + writeRounds + "*" + writeCount + ": " + sw.Elapsed);
-
-        random = new Random(0x1234);
-
-        sw.Restart();
-        for (var r = 0; r < readRounds; r++)
-            for (var i = 0; i < readCount; i++)
-                sparseArray.TryGetValue(i, out _);
-        Console.WriteLine("seq read     " + readRounds + "*" + readCount + ": " + sw.Elapsed);
+                sparseArray.TryGetValue(readCount - i - 1, out _);
+        Console.WriteLine("backward read     " + readRounds + "*" + readCount + ": " + sw.Elapsed);
     }
 }

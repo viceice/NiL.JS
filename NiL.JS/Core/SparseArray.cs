@@ -12,29 +12,74 @@ namespace NiL.JS.Core;
 [DebuggerDisplay("Count = {Count}")]
 public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue>, ICloneable
 {
+    private const int SegmentSizeDegree = 11;
+    private const int SegmentNextAdditionSize = SegmentSizeDegree / 2;
+    private const uint SegmentNextAdditionMask = (1 << (SegmentSizeDegree / 2)) - 1;
+    private const int SegmentNextAdditionOffset = 32 - SegmentSizeDegree;
+    private const int SegmentSize = 1 << SegmentSizeDegree;
+    private const uint SegmentIndexMask = uint.MaxValue / SegmentSize;
+
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct NavyItem
+    private struct NavigationItem
     {
-        public uint index;
-        public ushort zeroNext;
-        public ushort oneNext;
+        public uint Index;
+        public ushort ZeroNext;
+        public ushort OneNext;
 
         public override string ToString()
         {
-            return index + "[" + zeroNext + ";" + oneNext + "]";
+            return Index + "[" + ZeroNext + ";" + OneNext + "]";
         }
     }
 
-    private const int SegmentSize = 1024;
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private struct SegmentNavigationItem
+    {
+        private uint _index;
+        private ushort _zeroNext;
+        private ushort _oneNext;
+
+        public int SegmentIndex
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => (int)(_index & SegmentIndexMask);
+            set => _index = (_index & ~SegmentIndexMask) | (uint)value;
+        }
+        public int SegmentZeroNext
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => _zeroNext | (int)(((_index >> SegmentNextAdditionOffset) & SegmentNextAdditionMask) << 16);
+            set
+            {
+                _zeroNext = (ushort)value;
+                _index &= ~(SegmentNextAdditionMask << SegmentNextAdditionOffset);
+                _index |= (uint)((value >> 16) & SegmentNextAdditionMask) << SegmentNextAdditionOffset;
+            }
+        }
+
+        public int SegmentOneNext
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => _oneNext | (int)(((_index >> (SegmentNextAdditionOffset + SegmentNextAdditionSize)) & SegmentNextAdditionMask) << 16);
+            set
+            {
+                _oneNext = (ushort)value;
+                _index &= ~(SegmentNextAdditionMask << (SegmentNextAdditionOffset + SegmentNextAdditionSize));
+                _index |= (uint)((value >> 16) & SegmentNextAdditionMask) << (SegmentNextAdditionOffset + SegmentNextAdditionSize);
+            }
+        }
+
+        public override string ToString() => SegmentIndex + "[" + SegmentZeroNext + ";" + SegmentOneNext + "]";
+    }
 
     private static TValue _fictive;
 
     private uint _pseudoLength;
 
-    private NavyItem[] _segmentsNavyData;
+    private SegmentNavigationItem[] _segmentsNavigationData;
     private int _segmentsCount;
 
-    private NavyItem[][] _navyData;
+    private NavigationItem[][] _navigationData;
     private TValue[][] _values;
     private ushort[] _used;
 
@@ -43,17 +88,17 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
 
     public SparseArray()
     {
-        _segmentsNavyData = [];
+        _segmentsNavigationData = [];
         _values = [];
-        _navyData = [];
+        _navigationData = [];
         _used = [];
     }
 
     public SparseArray(TValue[] values)
     {
-        _segmentsNavyData = [];
+        _segmentsNavigationData = [];
         _values = [];
-        _navyData = [];
+        _navigationData = [];
         _used = [];
 
         for (var i = 0; i < values.Length; i++)
@@ -98,17 +143,17 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
 
     internal ref TValue TryGetInternalForRead(uint index, out bool got)
     {
-        var virtualSegmentIndex = index / SegmentSize;
+        var virtualSegmentIndex = (int)(index / SegmentSize);
         var realSegmentIndex = segmentIndexRecalc(virtualSegmentIndex, true);
 
-        if (realSegmentIndex < 0 || _navyData.Length <= realSegmentIndex)
+        if (realSegmentIndex < 0 || _navigationData.Length <= realSegmentIndex)
         {
             got = false;
             _fictive = default;
             return ref _fictive;
         }
 
-        if (_navyData[realSegmentIndex].Length == 0)
+        if (_navigationData[realSegmentIndex].Length == 0)
         {
             var values = _values[realSegmentIndex];
             var itemIndex = index & (SegmentSize - 1);
@@ -130,25 +175,20 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
 
     internal ref TValue TryGetInternalForWrite(uint index, out bool got)
     {
-        var virtaulSegmentIndex = index / SegmentSize;
+        var virtaulSegmentIndex = (int)(index / SegmentSize);
         var realSegmentIndex = segmentIndexRecalc(virtaulSegmentIndex, false);
 
-        if (_navyData.Length <= realSegmentIndex)
-        {
-            resizeL0(realSegmentIndex);
-        }
-
-        if (_navyData[realSegmentIndex].Length == 0)
+        if (_navigationData[realSegmentIndex].Length == 0)
         {
             var values = _values[realSegmentIndex];
             var itemIndex = (int)index & (SegmentSize - 1);
 
             if (itemIndex >= values.Length)
             {
-                if (itemIndex <= values.Length + 4 || values.Length * 4 >= SegmentSize)
+                if (itemIndex <= values.Length * 3 || values.Length * 4 >= SegmentSize)
                 {
-                    var newSize = Math.Min(SegmentSize, Math.Max(values.Length * 2, 8));
-                    if (newSize <= itemIndex)
+                    var newSize = Math.Min(SegmentSize, Math.Max(values.Length * 2, 1));
+                    while (newSize <= itemIndex)
                         newSize *= 2;
 
                     Array.Resize(ref values, newSize);
@@ -180,7 +220,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
         var len = values.Length;
 
         if (values.Length == 0)
-            len = 2;
+            len = 1;
 
         if (values.Length != len)
         {
@@ -188,9 +228,9 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
             _values[realSegmentIndex] = values;
         }
 
-        _navyData[realSegmentIndex] = new NavyItem[len];
+        _navigationData[realSegmentIndex] = new NavigationItem[len];
 
-        var bias = _segmentsNavyData[realSegmentIndex].index * SegmentSize;
+        var bias = _segmentsNavigationData[realSegmentIndex].SegmentIndex * SegmentSize;
 
         if (typeof(TValue).IsClass)
         {
@@ -218,14 +258,15 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void resizeL0(int newRealSegmentsCount)
     {
-        Array.Resize(ref _navyData, newRealSegmentsCount is 0 ? 1 : 2 << NumberUtils.IntLog(newRealSegmentsCount));
-        Array.Resize(ref _segmentsNavyData, _navyData.Length);
-        Array.Resize(ref _values, _navyData.Length);
-        Array.Resize(ref _used, _navyData.Length);
+        var oldSize = _navigationData.Length;
+        Array.Resize(ref _navigationData, newRealSegmentsCount <= 1 ? 1 : 1 << NumberUtils.IntLog(newRealSegmentsCount));
+        Array.Resize(ref _segmentsNavigationData, _navigationData.Length);
+        Array.Resize(ref _values, _navigationData.Length);
+        Array.Resize(ref _used, _navigationData.Length);
 
-        for (var i = _navyData.Length - 1; i >= 0 && _navyData[i] is null; i--)
+        for (var i = oldSize; i < _navigationData.Length; i++)
         {
-            _navyData[i] = [];
+            _navigationData[i] = [];
             _values[i] = [];
         }
     }
@@ -234,16 +275,16 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
     private enum FindNearestMode { NotLess, NotMore }
     private (int realSegmentIndex, int virtualSegmentIndex, int realItemIndex) findNearest(long index, FindNearestMode mode)
     {
-        var navy = _segmentsNavyData;
+        var segmentNavigation = _segmentsNavigationData;
 
-        if (navy.Length == 0)
+        if (segmentNavigation.Length == 0)
             return (-1, -1, -1);
 
-        var virtualSegmentIndex = (uint)index / SegmentSize;
+        var virtualSegmentIndex = (int)(index / SegmentSize);
         var mask = (int)((1L << 31) / SegmentSize);
         var firstTry = _segmentsCount > index;
         var i = firstTry ? (int)index : 0;
-        int nextIndex;
+        int nextSegmentIndex;
         var realSegmentIndex = -1;
         var alterI = -1;
 
@@ -253,54 +294,54 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
 
             while (true)
             {
-                ref var navyItem = ref navy[i];
-                if (navyItem.index == virtualSegmentIndex)
+                ref var segmentNavItem = ref segmentNavigation[i];
+                if (segmentNavItem.SegmentIndex == virtualSegmentIndex)
                 {
                     realSegmentIndex = i;
 
-                    if (_navyData[realSegmentIndex].Length == 0)
+                    if (_navigationData[realSegmentIndex].Length == 0)
                     {
                         if (_values[realSegmentIndex].Length > (int)(index & (SegmentSize - 1)))
                         {
-                            return (realSegmentIndex, (int)navyItem.index, (int)(index & (SegmentSize - 1)));
+                            return (realSegmentIndex, segmentNavItem.SegmentIndex, (int)(index & (SegmentSize - 1)));
                         }
                     }
                     else
                     {
                         var nestedMask = SegmentSize >> 1;
-                        var n = _navyData[realSegmentIndex][0];
+                        var navItem = _navigationData[realSegmentIndex][0];
                         var itemIndex = 0;
                         var nestedAlterI = -1;
                         while (true)
                         {
-                            if (n.index >= index)
-                                return (realSegmentIndex, (int)navyItem.index, itemIndex);
+                            if (navItem.Index >= index)
+                                return (realSegmentIndex, segmentNavItem.SegmentIndex, itemIndex);
 
-                            itemIndex = (index & nestedMask) == 0 ? n.zeroNext : n.oneNext;
+                            itemIndex = (index & nestedMask) == 0 ? navItem.ZeroNext : navItem.OneNext;
 
                             if (itemIndex == 0)
                             {
-                                if (n.oneNext == 0)
+                                if (navItem.OneNext == 0)
                                 {
                                     if (nestedAlterI == -1)
                                         break;
 
                                     nestedMask = 0;
-                                    n = _navyData[realSegmentIndex][nestedAlterI];
+                                    navItem = _navigationData[realSegmentIndex][nestedAlterI];
                                     itemIndex = nestedAlterI;
                                     nestedAlterI = -1;
                                     continue;
                                 }
 
-                                itemIndex = n.oneNext;
+                                itemIndex = navItem.OneNext;
                                 nestedMask = 0;
                             }
 
-                            if (itemIndex != n.oneNext && n.oneNext != 0)
-                                nestedAlterI = n.oneNext;
+                            if (itemIndex != navItem.OneNext && navItem.OneNext != 0)
+                                nestedAlterI = navItem.OneNext;
 
                             nestedMask >>= 1;
-                            n = _navyData[realSegmentIndex][itemIndex];
+                            navItem = _navigationData[realSegmentIndex][itemIndex];
                         }
                     }
                 }
@@ -312,27 +353,27 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                     continue;
                 }
 
-                if (navyItem.index > virtualSegmentIndex)
+                if (segmentNavItem.SegmentIndex > virtualSegmentIndex)
                 {
                     // дальнейшее продвижение будет только увеличивать индекс
-                    virtualSegmentIndex = navyItem.index;
+                    virtualSegmentIndex = segmentNavItem.SegmentIndex;
                     realSegmentIndex = i;
-                    return (realSegmentIndex, (int)virtualSegmentIndex, 0);
+                    return (realSegmentIndex, virtualSegmentIndex, 0);
                 }
 
                 var isZero = (virtualSegmentIndex & mask) == 0;
-                nextIndex = isZero ? navyItem.zeroNext : navyItem.oneNext;
+                nextSegmentIndex = isZero ? segmentNavItem.SegmentZeroNext : segmentNavItem.SegmentOneNext;
 
-                if (nextIndex == 0)
+                if (nextSegmentIndex == 0)
                 {
-                    if (navyItem.index == virtualSegmentIndex && navyItem.zeroNext != 0)
+                    if (segmentNavItem.SegmentIndex == virtualSegmentIndex && segmentNavItem.SegmentZeroNext != 0)
                     {
                         isZeroBranch = true;
-                        i = navyItem.zeroNext;
+                        i = segmentNavItem.SegmentZeroNext;
                         mask = 0;
                         continue;
                     }
-                    else if (navyItem.oneNext == 0)
+                    else if (segmentNavItem.SegmentOneNext == 0)
                     {
                         if (alterI == -1)
                             return (-1, -1, -1);
@@ -344,14 +385,14 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                     else
                     {
                         mask = 0;
-                        nextIndex = navyItem.oneNext;
+                        nextSegmentIndex = segmentNavItem.SegmentOneNext;
                     }
                 }
 
-                if (isZero && navyItem.oneNext != 0 && !isZeroBranch)
-                    alterI = navyItem.oneNext;
+                if (isZero && segmentNavItem.SegmentOneNext != 0 && !isZeroBranch)
+                    alterI = segmentNavItem.SegmentOneNext;
 
-                i = nextIndex;
+                i = nextSegmentIndex;
                 mask >>= 1;
             }
         }
@@ -359,41 +400,45 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
         {
             while (true)
             {
-                ref var navyItem = ref navy[i];
-                if (navyItem.index == virtualSegmentIndex)
+                ref var segmentNavItem = ref segmentNavigation[i];
+                if (segmentNavItem.SegmentIndex == virtualSegmentIndex)
                 {
                     realSegmentIndex = i;
 
-                    if (_navyData[realSegmentIndex].Length == 0)
+                    if (_navigationData[realSegmentIndex].Length == 0)
                     {
-                        return (realSegmentIndex, (int)navyItem.index, Math.Min(_values[realSegmentIndex].Length - 1, (int)(index & (SegmentSize - 1))));
+                        return (realSegmentIndex, segmentNavItem.SegmentIndex, Math.Min(_values[realSegmentIndex].Length - 1, (int)(index & (SegmentSize - 1))));
                     }
                     else
                     {
                         mask = SegmentSize >> 1;
-                        var n = _navyData[realSegmentIndex][0];
+                        var n = _navigationData[realSegmentIndex][0];
                         var itemIndex = 0;
                         while (true)
                         {
-                            if (n.index == index)
-                                return (realSegmentIndex, (int)navyItem.index, itemIndex);
+                            if (n.Index == index)
+                                return (realSegmentIndex, segmentNavItem.SegmentIndex, itemIndex);
 
-                            if (n.index > index)
+                            if (n.Index > index)
                                 return (-1, -1, -1);
 
-                            itemIndex = (index & mask) == 0 ? n.zeroNext : n.oneNext;
+                            var nextItemIndex = (index & mask) == 0 ? n.ZeroNext : n.OneNext;
 
-                            if (itemIndex == 0)
+                            if (nextItemIndex == 0)
                             {
-                                if (n.zeroNext == 0)
-                                    return (realSegmentIndex, (int)navyItem.index, itemIndex);
+                                if (n.ZeroNext == 0)
+                                    return (realSegmentIndex, segmentNavItem.SegmentIndex, itemIndex);
 
-                                itemIndex = n.zeroNext;
+                                nextItemIndex = n.ZeroNext;
                                 mask = int.MaxValue;
                             }
 
+                            if (_navigationData[realSegmentIndex][nextItemIndex].Index > index)
+                                return (realSegmentIndex, segmentNavItem.SegmentIndex, itemIndex);
+
                             mask >>= 1;
-                            n = _navyData[realSegmentIndex][itemIndex];
+                            n = _navigationData[realSegmentIndex][nextItemIndex];
+                            itemIndex = nextItemIndex;
                         }
                     }
                 }
@@ -405,15 +450,15 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                     continue;
                 }
 
-                if (navyItem.index > virtualSegmentIndex)
+                if (segmentNavItem.SegmentIndex > virtualSegmentIndex)
                 {
                     return (-1, -1, -1);
                 }
 
                 var isZero = (virtualSegmentIndex & mask) == 0;
-                nextIndex = isZero ? navyItem.zeroNext : navyItem.oneNext;
+                nextSegmentIndex = isZero ? segmentNavItem.SegmentZeroNext : segmentNavItem.SegmentOneNext;
 
-                if (nextIndex == 0)
+                if (nextSegmentIndex == 0)
                 {
                     if (isZero)
                     {
@@ -427,116 +472,135 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                     }
                 }
 
-                if (navy[nextIndex].index > virtualSegmentIndex
-                    || (_navyData[nextIndex].Length > 0 && _navyData[nextIndex][0].index > index))
+                if (segmentNavigation[nextSegmentIndex].SegmentIndex > virtualSegmentIndex
+                    || (_navigationData[nextSegmentIndex].Length > 0 && _navigationData[nextSegmentIndex][0].Index > index))
                 {
                     realSegmentIndex = i;
 
-                    if (_navyData[realSegmentIndex].Length == 0)
-                        return (realSegmentIndex, (int)navyItem.index, _values[realSegmentIndex].Length - 1);
+                    if (_navigationData[realSegmentIndex].Length == 0)
+                        return (realSegmentIndex, segmentNavItem.SegmentIndex, _values[realSegmentIndex].Length - 1);
                     else
                     {
-                        var n = _navyData[realSegmentIndex][0];
+                        var n = _navigationData[realSegmentIndex][0];
                         var itemIndex = 0;
                         while (true)
                         {
-                            if (n.oneNext != 0)
-                                n = _navyData[realSegmentIndex][itemIndex = n.oneNext];
-                            else if (n.zeroNext != 0)
-                                n = _navyData[realSegmentIndex][itemIndex = n.zeroNext];
+                            if (n.OneNext != 0)
+                                n = _navigationData[realSegmentIndex][itemIndex = n.OneNext];
+                            else if (n.ZeroNext != 0)
+                                n = _navigationData[realSegmentIndex][itemIndex = n.ZeroNext];
                             else
                                 break;
                         }
 
-                        return (realSegmentIndex, (int)navyItem.index, itemIndex);
+                        return (realSegmentIndex, segmentNavItem.SegmentIndex, itemIndex);
                     }
                 }
 
-                if (!isZero && navyItem.zeroNext != 0)
-                    alterI = navyItem.zeroNext;
+                if (!isZero && segmentNavItem.SegmentZeroNext != 0)
+                    alterI = segmentNavItem.SegmentZeroNext;
 
-                i = nextIndex;
+                i = nextSegmentIndex;
                 mask >>= 1;
             }
         }
     }
 
-    private int segmentIndexRecalc(uint index, bool forRead)
+    private int segmentIndexRecalc(int segmentIndex, bool forRead)
     {
-        var navy = _segmentsNavyData;
+        var navi = _segmentsNavigationData;
 
-        if (navy.Length == 0)
+        if (navi.Length == 0)
         {
             if (forRead)
                 return -1;
 
-            _segmentsNavyData = [new() { index = index }];
+            _segmentsNavigationData = [new() { SegmentIndex = segmentIndex }];
             _segmentsCount = 1;
+            _navigationData = [[]];
+            _values = [[]];
+            _used = [0];
             return 0;
         }
 
-        if (index < _segmentsCount && navy[index].index == index)
-            return (int)index;
+        if (segmentIndex < _segmentsCount && navi[segmentIndex].SegmentIndex == segmentIndex)
+            return segmentIndex;
 
         var mask = (int)((1L << 31) / SegmentSize);
         var i = 0;
         int nextIndex;
         while (true)
         {
-            var navyItem = navy[i];
-            if (navyItem.index == index)
+            var navItem = navi[i];
+            if (navItem.SegmentIndex == segmentIndex)
                 return i;
 
-            if (navyItem.index > index)
+            var isNotZero = (segmentIndex & mask) != 0;
+
+            if (navItem.SegmentIndex > segmentIndex)
             {
                 if (forRead)
                     return -1;
 
-                var oldIndex = navyItem.index;
-                var oldNavyData = _navyData[i];
+                var oldIndex = navItem.SegmentIndex;
+                var oldNavData = _navigationData[i];
                 var oldValues = _values[i];
                 var oldUsed = _used[i];
 
-                _navyData[i] = [];
+                _navigationData[i] = [];
                 _values[i] = [];
                 _used[i] = 0;
-                navy[i].index = index;
+                navi[i].SegmentIndex = segmentIndex;
 
-                nextIndex = segmentIndexRecalc(oldIndex, false);
+                isNotZero = (oldIndex & mask) != 0;
+                if (isNotZero ? navItem.SegmentOneNext == 0 : navItem.SegmentZeroNext == 0)
+                {
+                    nextIndex = _segmentsCount++;
+                    if (isNotZero)
+                        navi[i].SegmentOneNext = nextIndex;
+                    else
+                        navi[i].SegmentZeroNext = nextIndex;
 
-                _segmentsNavyData[nextIndex].index = oldIndex;
-                _navyData[nextIndex] = oldNavyData;
+                    if (_segmentsNavigationData.Length >= nextIndex)
+                        resizeL0(nextIndex * 2);
+                }
+                else
+                {
+                    nextIndex = segmentIndexRecalc(oldIndex, false);
+                }
+
+                _segmentsNavigationData[nextIndex].SegmentIndex = oldIndex;
+                _navigationData[nextIndex] = oldNavData;
                 _values[nextIndex] = oldValues;
                 _used[nextIndex] = oldUsed;
 
                 return i;
             }
 
-            var isNotZero = (index & mask) != 0;
-            nextIndex = isNotZero ? navyItem.oneNext : navyItem.zeroNext;
+            nextIndex = isNotZero ? navItem.SegmentOneNext : navItem.SegmentZeroNext;
 
             if (nextIndex == 0)
             {
                 if (forRead)
                     return -1;
 
-                _segmentsCount = checked((ushort)(_segmentsCount + 1));
+                _segmentsCount++;
                 nextIndex = _segmentsCount - 1;
 
                 if (isNotZero)
-                    navy[i].oneNext = (ushort)nextIndex;
+                    navi[i].SegmentOneNext = nextIndex;
                 else
-                    navy[i].zeroNext = (ushort)nextIndex;
+                    navi[i].SegmentZeroNext = nextIndex;
 
-                if (nextIndex >= navy.Length)
+                if (nextIndex >= navi.Length)
                 {
                     var newSize = nextIndex * 2;
                     resizeL0(newSize);
 
-                    navy = _segmentsNavyData;
+                    navi = _segmentsNavigationData;
                 }
 
-                navy[nextIndex].index = index;
+                navi[nextIndex].SegmentIndex = segmentIndex;
             }
 
             i = nextIndex;
@@ -549,15 +613,18 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
     {
         var mask = SegmentSize >> 1;
         var values = _values[realSegmentIndex];
-        var navy = _navyData[realSegmentIndex];
+        var navigationData = _navigationData[realSegmentIndex];
 
         var i = (int)index & (SegmentSize - 1);
 
-        if (i < navy.Length && navy[i].index == index)
+        if (i < navigationData.Length && navigationData[i].Index == index)
         {
             if (!forRead && i == 0 && _used[realSegmentIndex] == 0)
             {
                 _used[realSegmentIndex] = 1;
+
+                if (_pseudoLength <= index)
+                    _pseudoLength = index + 1;
             }
 
             got = true;
@@ -569,11 +636,11 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
         ushort ni;
         while (true)
         {
-            ref var navyItem = ref navy[i];
-            if (navyItem.index < index)
+            ref var navItem = ref navigationData[i];
+            if (navItem.Index < index)
             {
                 var isNotZero = (index & mask) != 0;
-                ni = isNotZero ? navyItem.oneNext : navyItem.zeroNext;
+                ni = isNotZero ? navItem.OneNext : navItem.ZeroNext;
 
                 if (ni == 0)
                 {
@@ -590,13 +657,13 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                     ni = _used[realSegmentIndex]++;
 
                     if (isNotZero)
-                        navyItem.oneNext = ni;
+                        navItem.OneNext = ni;
                     else
-                        navyItem.zeroNext = ni;
+                        navItem.ZeroNext = ni;
 
                     got = true;
 
-                    if (ni >= navy.Length)
+                    if (ni >= navigationData.Length)
                     {
                         var newSize = ni * 2;
 
@@ -604,10 +671,10 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                         {
                             values = new TValue[SegmentSize];
 
-                            navy = _navyData[realSegmentIndex];
-                            for (var n = 0; n < navy.Length; n++)
+                            navigationData = _navigationData[realSegmentIndex];
+                            for (var n = 0; n < navigationData.Length; n++)
                             {
-                                var relativeIndex = navy[n].index & (SegmentSize - 1);
+                                var relativeIndex = navigationData[n].Index & (SegmentSize - 1);
                                 if (relativeIndex == 0 && n != 0)
                                     break;
 
@@ -615,28 +682,28 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                             }
 
                             _values[realSegmentIndex] = values;
-                            _navyData[realSegmentIndex] = [];
+                            _navigationData[realSegmentIndex] = [];
 
                             return ref values[index & (SegmentSize - 1)];
                         }
                         else
                         {
-                            Array.Resize(ref navy, newSize);
+                            Array.Resize(ref navigationData, newSize);
                             Array.Resize(ref values, newSize);
 
-                            _navyData[realSegmentIndex] = navy;
+                            _navigationData[realSegmentIndex] = navigationData;
                             _values[realSegmentIndex] = values;
                         }
                     }
 
-                    navy[ni].index = index;
+                    navigationData[ni].Index = index;
                     return ref values[ni];
                 }
 
                 i = ni;
                 mask >>= 1;
             }
-            else if (navyItem.index > index)
+            else if (navItem.Index > index)
             {
                 if (forRead)
                 {
@@ -645,10 +712,10 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                     return ref _fictive;
                 }
 
-                var oldIndex = navyItem.index;
+                var oldIndex = navItem.Index;
                 var oldValue = values[i];
 
-                navyItem.index = index;
+                navItem.Index = index;
                 values[i] = default!;
 
                 if (oldIndex < _pseudoLength)
@@ -656,7 +723,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
 
                 got = true;
 
-                if (_navyData[realSegmentIndex].Length == 0)
+                if (_navigationData[realSegmentIndex].Length == 0)
                     i = (int)(index & (SegmentSize - 1));
 
                 values = _values[realSegmentIndex];
@@ -677,7 +744,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
     {
         get
         {
-            ref var r = ref TryGetInternalForRead((uint)index, out var got);
+            var r = TryGetInternalForRead((uint)index, out var got);
 
             if (got)
                 return r;
@@ -728,9 +795,9 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
         if (coord.itemIndex == -1)
             return -1;
 
-        var navyItems = _navyData[coord.realSegmentIndex];
-        if (navyItems.Length != 0)
-            return navyItems[coord.itemIndex].index;
+        var navItems = _navigationData[coord.realSegmentIndex];
+        if (navItems.Length != 0)
+            return navItems[coord.itemIndex].Index;
 
         var externalIndex = coord.virtualSegmentIndex * SegmentSize + (uint)coord.itemIndex;
         return externalIndex;
@@ -738,9 +805,9 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
 
     public void Clear()
     {
-        _segmentsNavyData = [];
+        _segmentsNavigationData = [];
         _values = [];
-        _navyData = [];
+        _navigationData = [];
         _used = [];
         _pseudoLength = 0;
     }
@@ -877,25 +944,25 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
     {
         get
         {
-            for (var i = 0; i < _navyData.Length; i++)
+            for (var i = 0; i < _navigationData.Length; i++)
             {
-                var realSegmentIndex = (int)_segmentsNavyData[i].index * SegmentSize;
+                var virtualSegmentIndex = _segmentsNavigationData[i].SegmentIndex * SegmentSize;
 
-                if (_navyData[i].Length != 0)
+                if (_navigationData[i].Length != 0)
                 {
                     for (var j = 0; j < _used[i]; j++)
                     {
-                        yield return new KeyValuePair<int, TValue>(_navyData[i].Length is 0 ? realSegmentIndex + j : (int)_navyData[i][j].index, _values[i][j]!);
+                        yield return new KeyValuePair<int, TValue>(_navigationData[i].Length is 0 ? virtualSegmentIndex + j : (int)_navigationData[i][j].Index, _values[i][j]!);
                     }
                 }
                 else
                 {
                     for (var j = 0; j < _values[i].Length; j++)
                     {
-                        if (realSegmentIndex + j >= _pseudoLength)
+                        if (virtualSegmentIndex + j >= _pseudoLength)
                             break;
 
-                        yield return new KeyValuePair<int, TValue>(realSegmentIndex + j, _values[i][j]!);
+                        yield return new KeyValuePair<int, TValue>(virtualSegmentIndex + j, _values[i][j]!);
                     }
                 }
             }
@@ -1061,16 +1128,25 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
     {
         var result = new SparseArray<TValue>();
 
-        result._navyData = new NavyItem[_navyData.Length][];
-        for (var i = 0; i < _navyData.Length; i++)
+        result._navigationData = new NavigationItem[_navigationData.Length][];
+        for (var i = 0; i < _navigationData.Length; i++)
         {
-            result._navyData[i] = _navyData[i]?.Clone() as NavyItem[];
+            if (_navigationData[i].Length == 0)
+                result._navigationData[i] = [];
+            else
+            {
+                result._navigationData[i] = new NavigationItem[_navigationData[i].Length];
+                Array.Copy(_navigationData[i], result._navigationData[i], result._navigationData[i].Length);
+            }
         }
 
         result._values = new TValue[_values.Length][];
         for (var i = 0; i < _values.Length; i++)
         {
-            result._values[i] = _values[i]?.Clone() as TValue[];
+            if (_values[i].Length == 0)
+                result._values[i] = [];
+            else
+                result._values[i] = _values[i]?.Clone() as TValue[];
         }
 
         result._used = _used.Clone() as ushort[];
@@ -1079,7 +1155,7 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
 
         result._segmentsCount = _segmentsCount;
 
-        result._segmentsNavyData = _segmentsNavyData.Clone() as NavyItem[];
+        result._segmentsNavigationData = _segmentsNavigationData.Clone() as SegmentNavigationItem[];
 
         return result;
     }
