@@ -434,7 +434,15 @@ public sealed class SparseArray<TValue> : IList<TValue>, IDictionary<int, TValue
                             }
 
                             if (_navigationData[realSegmentIndex][nextItemIndex].Index > index)
-                                return (realSegmentIndex, segmentNavItem.SegmentIndex, itemIndex);
+                            {
+                                if (n.ZeroNext > 0 && _navigationData[realSegmentIndex][n.ZeroNext].Index < index)
+                                {
+                                    mask = int.MaxValue;
+                                    nextItemIndex = n.ZeroNext;
+                                }
+                                else
+                                    return (realSegmentIndex, segmentNavItem.SegmentIndex, itemIndex);
+                            }
 
                             mask >>= 1;
                             n = _navigationData[realSegmentIndex][nextItemIndex];
